@@ -1,0 +1,104 @@
+object FormMain: TFormMain
+  Left = 0
+  Top = 0
+  Caption = 'DOOM'
+  ClientHeight = 480
+  ClientWidth = 640
+  FormFactor.Width = 640
+  FormFactor.Height = 480
+  FormFactor.Devices = [Desktop, iPhone, iPad]
+  OnCreate = FormCreate
+  OnDestroy = FormDestroy
+  OnKeyDown = FormKeyDown
+  OnKeyUp = FormKeyUp
+  DesignerMasterStyle = 0
+  object ImageView: TImage
+    Align = Client
+    HitTest = False
+    Size.Width = 640.000000000000000000
+    Size.Height = 280.000000000000000000
+    Size.PlatformDefault = False
+    WrapMode = Stretch
+  end
+  object LayPad: TLayout
+    Align = Bottom
+    Size.Width = 640.000000000000000000
+    Size.Height = 200.000000000000000000
+    Size.PlatformDefault = False
+    TabOrder = 0
+    Visible = False
+    object BtnUp: TButton
+      Position.X = 110.000000000000000000
+      Position.Y = 8.000000000000000000
+      Size.Width = 90.000000000000000000
+      Size.Height = 56.000000000000000000
+      Size.PlatformDefault = False
+      TabOrder = 0
+      Text = 'Up'
+      OnMouseDown = PadDown
+      OnMouseUp = PadUp
+    end
+    object BtnLeft: TButton
+      Position.X = 12.000000000000000000
+      Position.Y = 72.000000000000000000
+      Size.Width = 90.000000000000000000
+      Size.Height = 56.000000000000000000
+      Size.PlatformDefault = False
+      TabOrder = 1
+      Text = 'Left'
+      OnMouseDown = PadDown
+      OnMouseUp = PadUp
+    end
+    object BtnRight: TButton
+      Position.X = 208.000000000000000000
+      Position.Y = 72.000000000000000000
+      Size.Width = 90.000000000000000000
+      Size.Height = 56.000000000000000000
+      Size.PlatformDefault = False
+      TabOrder = 2
+      Text = 'Right'
+      OnMouseDown = PadDown
+      OnMouseUp = PadUp
+    end
+    object BtnDown: TButton
+      Position.X = 110.000000000000000000
+      Position.Y = 136.000000000000000000
+      Size.Width = 90.000000000000000000
+      Size.Height = 56.000000000000000000
+      Size.PlatformDefault = False
+      TabOrder = 3
+      Text = 'Down'
+      OnMouseDown = PadDown
+      OnMouseUp = PadUp
+    end
+    object BtnFire: TButton
+      Position.X = 420.000000000000000000
+      Position.Y = 36.000000000000000000
+      Size.Width = 180.000000000000000000
+      Size.Height = 64.000000000000000000
+      Size.PlatformDefault = False
+      TabOrder = 4
+      Text = 'Fire'
+      OnMouseDown = PadDown
+      OnMouseUp = PadUp
+    end
+    object BtnUse: TButton
+      Position.X = 420.000000000000000000
+      Position.Y = 116.000000000000000000
+      Size.Width = 180.000000000000000000
+      Size.Height = 64.000000000000000000
+      Size.PlatformDefault = False
+      TabOrder = 5
+      Text = 'Use'
+      OnMouseDown = PadDown
+      OnMouseUp = PadUp
+    end
+  end
+  object GameTimer: TTimer
+    Enabled = False
+    Interval = 28
+    OnTimer = GameTimerTimer
+    Left = 24
+    Top = 24
+  end
+end
