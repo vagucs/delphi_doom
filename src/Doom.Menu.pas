@@ -60,6 +60,7 @@ type
     procedure Play(const Name: string);
     procedure PlayTitle;
     procedure PlayLevel(Episode, MapN: Integer);
+    procedure StopSfx;
     procedure Update;
     procedure SetSfxVolume(Vol: Integer);
     procedure SetMusicVolume(Vol: Integer);
@@ -210,6 +211,12 @@ procedure TDoomSound.PlayLevel(Episode, MapN: Integer);
 begin
   if FAudio <> nil then
     FAudio.PlayLevel(Episode, MapN);
+end;
+
+procedure TDoomSound.StopSfx;
+begin
+  if FAudio <> nil then
+    FAudio.StopSfx;
 end;
 
 procedure TDoomSound.Update;

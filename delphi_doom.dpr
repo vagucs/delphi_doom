@@ -15,6 +15,7 @@ program delphi_doom;
 uses
   System.StartUpCopy,
   FMX.Forms,
+  FMX.Types,
   Doom.Compat in 'src\Doom.Compat.pas',
   Doom.Wad in 'src\Doom.Wad.pas',
   Doom.VVideo in 'src\Doom.VVideo.pas',
@@ -36,6 +37,7 @@ uses
 
 begin
   Application.Initialize;
+  Application.FormFactor.Orientations := [TFormOrientation.Landscape, TFormOrientation.InvertedLandscape];
   Application.CreateForm(TFormMain, FormMain);
   Application.Run;
 end.

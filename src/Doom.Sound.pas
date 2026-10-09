@@ -12,14 +12,16 @@ unit Doom.Sound;
   www.vagucs.com.br
 
   Efeitos DS* em PCM e musica MUS convertida para MIDI.
-  A musica toca no Windows pela MCI. Android e iOS ficam sem musica.
+  No Windows a musica usa a MCI. No Android os efeitos saem pelo AudioTrack.
+  A musica continua so no Windows.
 }
 
 interface
 
 uses
   System.SysUtils, System.Math, System.Generics.Collections, Doom.Wad
-  {$IFDEF MSWINDOWS}, Winapi.MMSystem{$ENDIF};
+  {$IFDEF MSWINDOWS}, Winapi.MMSystem{$ENDIF}
+  {$IFDEF ANDROID}, Androidapi.JNI.Media, Androidapi.JNIBridge{$ENDIF};
 
 const
   MIXRATE = 11025;
@@ -27,20 +29,21 @@ const
   MIXSLOTS = 3;
   CHUNK = 315;
 
-{$IFDEF MSWINDOWS}
 type
-  TWaveSlot = record
-    Hdr: TWaveHdr;
-    Data: TBytes;
-    Ready: Boolean;
-  end;
-
   TVoice = record
     Data: TBytes;
     Name: string;
     Pos: Integer;
     Gain: Integer;
     Active: Boolean;
+  end;
+
+{$IFDEF MSWINDOWS}
+type
+  TWaveSlot = record
+    Hdr: TWaveHdr;
+    Data: TBytes;
+    Ready: Boolean;
   end;
 {$ENDIF}
 
@@ -67,11 +70,20 @@ type
     FMusicName: string;
     FMusicLoop: Boolean;
     FCache: TDictionary<string, TBytes>;
+    FVoices: array[0..VOICES - 1] of TVoice;
+    FOutOn: Boolean;
+    {$IFDEF ANDROID}
+    FTrack: JAudioTrack;
+    FTrackBuf: TJavaArray<Byte>;
+    FSamplesOut: Integer;
+    procedure OpenTrack;
+    procedure CloseTrack;
+    procedure WriteMix;
+    {$ENDIF}
     {$IFDEF MSWINDOWS}
     FWave: HWAVEOUT;
     FWaveOn: Boolean;
     FMix: array[0..MIXSLOTS - 1] of TWaveSlot;
-    FVoices: array[0..VOICES - 1] of TVoice;
     FMusicOn: Boolean;
     FMusicPath: string;
     procedure OpenWave;
@@ -403,11 +415,17 @@ begin
   {$IFDEF MSWINDOWS}
   OpenWave;
   {$ENDIF}
+  {$IFDEF ANDROID}
+  OpenTrack;
+  {$ENDIF}
 end;
 
 destructor TGameSound.Destroy;
 begin
   StopMusic;
+  {$IFDEF ANDROID}
+  CloseTrack;
+  {$ENDIF}
   {$IFDEF MSWINDOWS}
   CloseWave;
   if FMusicPath <> '' then
@@ -489,17 +507,14 @@ begin
 end;
 
 procedure TGameSound.Start(const Name: string; Gain: Integer);
-{$IFDEF MSWINDOWS}
 var
   Pcm: TBytes;
   Key: string;
   Slot, FreeSlot, I: Integer;
-{$ENDIF}
 begin
   if not GAllowSfx then
     Exit;
-  {$IFDEF MSWINDOWS}
-  if (not FWaveOn) or (FSfxVol <= 0) or (Gain <= 0) or (Name = '') then
+  if (not FOutOn) or (FSfxVol <= 0) or (Gain <= 0) or (Name = '') then
     Exit;
   Key := LowerCase(Trim(Name));
   Pcm := LoadSfx(Key);
@@ -528,10 +543,6 @@ begin
   FVoices[Slot].Gain := Gain;
   FVoices[Slot].Pos := 0;
   FVoices[Slot].Active := True;
-  {$ELSE}
-  if (Name = '') or (Gain < 0) then
-    Exit;
-  {$ENDIF}
 end;
 
 procedure TGameSound.Play(const Name: string);
@@ -575,14 +586,12 @@ begin
 end;
 
 procedure TGameSound.StopSfx;
-{$IFDEF MSWINDOWS}
 var
   I: Integer;
-{$ENDIF}
 begin
-  {$IFDEF MSWINDOWS}
   for I := 0 to VOICES - 1 do
     FVoices[I].Active := False;
+  {$IFDEF MSWINDOWS}
   if FWaveOn then
   begin
     waveOutReset(FWave);
@@ -592,6 +601,15 @@ begin
         waveOutUnprepareHeader(FWave, @FMix[I].Hdr, SizeOf(TWaveHdr));
         FMix[I].Ready := False;
       end;
+  end;
+  {$ENDIF}
+  {$IFDEF ANDROID}
+  FSamplesOut := 0;
+  if FOutOn and (FTrack <> nil) then
+  begin
+    FTrack.pause;
+    FTrack.flush;
+    FTrack.play;
   end;
   {$ENDIF}
 end;
@@ -698,6 +716,9 @@ var
   Mode: string;
 {$ENDIF}
 begin
+  {$IFDEF ANDROID}
+  WriteMix;
+  {$ENDIF}
   {$IFDEF MSWINDOWS}
   MixVoices;
   if (not FMusicOn) or (not FMusicLoop) then
@@ -721,6 +742,7 @@ begin
   Fmt.nBlockAlign := 2;
   Fmt.nAvgBytesPerSec := MIXRATE * 2;
   FWaveOn := waveOutOpen(@FWave, WAVE_MAPPER, @Fmt, 0, 0, CALLBACK_NULL) = MMSYSERR_NOERROR;
+  FOutOn := FWaveOn;
 end;
 
 procedure TGameSound.MixVoices;
@@ -834,6 +856,122 @@ begin
   if mciSendString(PChar(Cmd), Buf, 64, 0) <> 0 then
     Exit('');
   Result := Buf;
+end;
+{$ENDIF}
+
+{$IFDEF ANDROID}
+procedure TGameSound.OpenTrack;
+var
+  Min: Integer;
+begin
+  FOutOn := False;
+  FSamplesOut := 0;
+  try
+    Min := TJAudioTrack.JavaClass.getMinBufferSize(MIXRATE, 4, 2);
+    if Min < CHUNK * 8 then
+      Min := CHUNK * 8;
+    FTrack := TJAudioTrack.JavaClass.init(3, MIXRATE, 4, 2, Min, 1);
+    if FTrack = nil then
+      Exit;
+    FTrackBuf := TJavaArray<Byte>.Create(CHUNK * 2);
+    FTrack.play;
+    FOutOn := True;
+  except
+    FOutOn := False;
+    FTrack := nil;
+  end;
+end;
+
+procedure TGameSound.CloseTrack;
+var
+  I: Integer;
+begin
+  FOutOn := False;
+  for I := 0 to VOICES - 1 do
+    FVoices[I].Active := False;
+  if FTrack <> nil then
+  begin
+    try
+      FTrack.stop;
+      FTrack.release;
+    except
+    end;
+    FTrack := nil;
+  end;
+  FTrackBuf := nil;
+end;
+
+procedure TGameSound.WriteMix;
+var
+  Mix: array[0..CHUNK - 1] of Integer;
+  Raw: TBytes;
+  I, V, S, B, Head, Room, N: Integer;
+  W: Word;
+  Busy: Boolean;
+begin
+  if (not FOutOn) or (FTrack = nil) or (FTrackBuf = nil) then
+    Exit;
+  try
+    Head := FTrack.getPlaybackHeadPosition;
+  except
+    Head := FSamplesOut;
+  end;
+  Room := FSamplesOut - Head;
+  if Room < 0 then
+    Room := 0;
+  if Room > CHUNK * 4 then
+    Exit;
+  Busy := False;
+  for V := 0 to VOICES - 1 do
+    if FVoices[V].Active then
+      Busy := True;
+  if not Busy then
+    Exit;
+  for I := 0 to CHUNK - 1 do
+    Mix[I] := 0;
+  for V := 0 to VOICES - 1 do
+  begin
+    if not FVoices[V].Active then
+      Continue;
+    for I := 0 to CHUNK - 1 do
+    begin
+      B := FVoices[V].Pos;
+      if B + 1 >= Length(FVoices[V].Data) then
+      begin
+        FVoices[V].Active := False;
+        Break;
+      end;
+      S := FVoices[V].Data[B] or (FVoices[V].Data[B + 1] shl 8);
+      if S >= 32768 then
+        Dec(S, 65536);
+      Inc(Mix[I], S);
+      Inc(FVoices[V].Pos, 2);
+    end;
+  end;
+  SetLength(Raw, CHUNK * 2);
+  for I := 0 to CHUNK - 1 do
+  begin
+    S := Mix[I];
+    if S > 32767 then
+      S := 32767;
+    if S < -32768 then
+      S := -32768;
+    W := Word(SmallInt(S));
+    Raw[I * 2] := Byte(W and $FF);
+    Raw[I * 2 + 1] := Byte(W shr 8);
+  end;
+  for I := 0 to CHUNK * 2 - 1 do
+  begin
+    N := Raw[I];
+    if N > 127 then
+      Dec(N, 256);
+    FTrackBuf.Items[I] := ShortInt(N);
+  end;
+  try
+    if FTrack.write(FTrackBuf, 0, CHUNK * 2) > 0 then
+      Inc(FSamplesOut, CHUNK);
+  except
+  end;
 end;
 {$ENDIF}
 

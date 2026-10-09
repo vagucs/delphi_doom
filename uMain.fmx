@@ -9,6 +9,7 @@ object FormMain: TFormMain
   FormFactor.Devices = [Desktop, iPhone, iPad]
   OnCreate = FormCreate
   OnDestroy = FormDestroy
+  OnResize = FormResize
   OnKeyDown = FormKeyDown
   OnKeyUp = FormKeyUp
   DesignerMasterStyle = 0
@@ -16,14 +17,15 @@ object FormMain: TFormMain
     Align = Client
     HitTest = False
     Size.Width = 640.000000000000000000
-    Size.Height = 280.000000000000000000
+    Size.Height = 480.000000000000000000
     Size.PlatformDefault = False
     WrapMode = Stretch
   end
   object LayPad: TLayout
-    Align = Bottom
+    Align = Contents
+    HitTest = False
     Size.Width = 640.000000000000000000
-    Size.Height = 200.000000000000000000
+    Size.Height = 480.000000000000000000
     Size.PlatformDefault = False
     TabOrder = 0
     Visible = False
@@ -79,6 +81,39 @@ object FormMain: TFormMain
       Size.PlatformDefault = False
       TabOrder = 4
       Text = 'Fire'
+      OnMouseDown = PadDown
+      OnMouseUp = PadUp
+    end
+    object BtnWeapon: TButton
+      Position.X = 420.000000000000000000
+      Position.Y = 8.000000000000000000
+      Size.Width = 84.000000000000000000
+      Size.Height = 56.000000000000000000
+      Size.PlatformDefault = False
+      TabOrder = 6
+      Text = 'Gun'
+      OnMouseDown = PadDown
+      OnMouseUp = PadUp
+    end
+    object BtnRun: TButton
+      Position.X = 512.000000000000000000
+      Position.Y = 8.000000000000000000
+      Size.Width = 84.000000000000000000
+      Size.Height = 56.000000000000000000
+      Size.PlatformDefault = False
+      TabOrder = 7
+      Text = 'Run'
+      OnMouseDown = PadDown
+      OnMouseUp = PadUp
+    end
+    object BtnSide: TButton
+      Position.X = 420.000000000000000000
+      Position.Y = 188.000000000000000000
+      Size.Width = 176.000000000000000000
+      Size.Height = 56.000000000000000000
+      Size.PlatformDefault = False
+      TabOrder = 8
+      Text = 'Side'
       OnMouseDown = PadDown
       OnMouseUp = PadUp
     end

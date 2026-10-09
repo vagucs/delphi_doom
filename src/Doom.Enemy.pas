@@ -53,6 +53,7 @@ type
     function TryStep(Th: TMapThing; NX, NY: Integer): Boolean;
     procedure Wake(Th: TMapThing);
     procedure Look(Th: TMapThing; Heard: Boolean);
+    procedure Idle(Th: TMapThing);
     procedure Chase(Th: TMapThing);
     procedure Attack(Th: TMapThing);
     procedure FlySkull(Th: TMapThing);
@@ -165,6 +166,12 @@ begin
     Th.Floats := Floats;
     Th.MoveDir := NODIR;
     Th.Ambush := (Th.Options and 8) <> 0;
+    Th.FrameUse := 0;
+    if Th.ThingType = 67 then
+      Th.Tics := 15
+    else
+      Th.Tics := 10;
+    Th.Tics := 1 + (Rnd mod Th.Tics);
   end;
 end;
 
@@ -518,6 +525,31 @@ begin
     Wake(Th);
 end;
 
+procedure TEnemies.Idle(Th: TMapThing);
+var
+  Dur: Integer;
+begin
+  if (Th.ThingType = 3005) or (Th.ThingType = 71) then
+  begin
+    Th.FrameUse := 0;
+    Exit;
+  end;
+  if Th.ThingType = 67 then
+    Dur := 15
+  else
+    Dur := 10;
+  if Th.FrameUse < 0 then
+    Th.FrameUse := 0;
+  Dec(Th.Tics);
+  if Th.Tics > 0 then
+    Exit;
+  if Th.FrameUse = 0 then
+    Th.FrameUse := 1
+  else
+    Th.FrameUse := 0;
+  Th.Tics := Dur;
+end;
+
 function StepOf(Th: TMapThing; Dir: Integer; out NX, NY: Integer): Boolean;
 begin
   Result := (Dir >= 0) and (Dir < 8) and (Th <> nil);
@@ -751,7 +783,8 @@ begin
   if (FPlayer = nil) or (FPlayer.Health <= 0) then
   begin
     Th.Ai := 1;
-    Th.FrameUse := -1;
+    Th.FrameUse := 0;
+    Th.Tics := 0;
     Exit;
   end;
   Px := PlayerX;
@@ -871,7 +904,8 @@ begin
     if (FPlayer = nil) or (FPlayer.Health <= 0) then
     begin
       Th.Ai := 1;
-      Th.FrameUse := -1;
+      Th.FrameUse := 0;
+      Th.Tics := 0;
       Exit;
     end;
   end;
@@ -1297,7 +1331,11 @@ begin
       Continue;
     FUsed := False;
     if Th.Ai = 1 then
-      Look(Th, Heard)
+    begin
+      Look(Th, Heard);
+      if Th.Ai = 1 then
+        Idle(Th);
+    end
     else if Th.Ai = 3 then
       Attack(Th)
     else if Th.Ai = 5 then

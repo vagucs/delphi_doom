@@ -102,6 +102,7 @@ type
     function WallStops(Ln: TLine; AtZ, Slope, Dist: Integer): Boolean;
     procedure Slide(World: TWorld; StepX, StepY: Integer);
     procedure MoveXY(World: TWorld);
+    procedure FollowFloor(World: TWorld);
     procedure ApplyZ;
     procedure SectorFit(World: TWorld; PX, PY: Integer; out FloorZ, CeilZ: Integer);
     procedure Shoot(World: TWorld; Accurate: Boolean);
@@ -1157,6 +1158,21 @@ begin
   end;
 end;
 
+procedure TPlayer.FollowFloor(World: TWorld);
+var
+  Sub: TSubsector;
+begin
+  if (World = nil) or not NoClip then
+    Exit;
+  Sub := World.PointInSubsector(X, Y);
+  if (Sub = nil) or (Sub.Sector = nil) then
+    Exit;
+  FFloorZ := Sub.Sector.FloorHeight;
+  FCeilZ := Sub.Sector.CeilingHeight;
+  Z := FFloorZ;
+  FMomZ := 0;
+end;
+
 procedure TPlayer.ApplyZ;
 begin
   if Z < FFloorZ then
@@ -1516,6 +1532,7 @@ begin
     FDeltaView := 0;
     if (FMomX <> 0) or (FMomY <> 0) then
       MoveXY(World);
+    FollowFloor(World);
     ApplyZ;
     ViewZ := AsI32(Int64(Z) + FViewHeight);
     if (FCeilZ > Z + 8 * 65536) and (ViewZ > FCeilZ - 4 * 65536) then
@@ -1568,6 +1585,7 @@ begin
     Thrust(AsU32(Int64(Angle) - ANG90), Side * 2048);
   if (FMomX <> 0) or (FMomY <> 0) then
     MoveXY(World);
+  FollowFloor(World);
   ApplyZ;
   FViewHeight := AsI32(Int64(FViewHeight) + FDeltaView);
   if FViewHeight > VIEW_H then

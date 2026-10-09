@@ -17,7 +17,7 @@ unit Doom.Wad;
 interface
 
 uses
-  System.SysUtils, System.Classes, System.Generics.Collections;
+  System.SysUtils, System.Classes, System.IOUtils, System.Generics.Collections;
 
 type
   TLump = class
@@ -46,6 +46,7 @@ type
     function LumpName(Num: Integer): string;
   end;
 
+function WadSearchDirs: TArray<string>;
 function FindIwad: string;
 
 implementation
@@ -63,6 +64,33 @@ begin
   Result := UpperCase(Trim(TEncoding.ANSI.GetString(Raw, Off, I)));
 end;
 
+function WadSearchDirs: TArray<string>;
+var
+  Docs, Home: string;
+begin
+  Docs := '';
+  Home := '';
+  try
+    Docs := TPath.GetDocumentsPath;
+  except
+    Docs := '';
+  end;
+  try
+    Home := TPath.GetHomePath;
+  except
+    Home := '';
+  end;
+  Result := TArray<string>.Create(
+    Docs,
+    Home,
+    GetCurrentDir,
+    ExtractFilePath(ParamStr(0)),
+    ExpandFileName(IncludeTrailingPathDelimiter(GetCurrentDir) + '..'),
+    ExpandFileName(IncludeTrailingPathDelimiter(ExtractFilePath(ParamStr(0))) + '..'),
+    ExpandFileName(IncludeTrailingPathDelimiter(ExtractFilePath(ParamStr(0))) + '..\..'),
+    ExpandFileName(IncludeTrailingPathDelimiter(ExtractFilePath(ParamStr(0))) + '..\..\..'));
+end;
+
 function FindIwad: string;
 const
   Names: array[0..5] of string = (
@@ -71,16 +99,12 @@ var
   Dirs: TArray<string>;
   Dir, Name, Candidate: string;
 begin
-  Dirs := TArray<string>.Create(
-    GetCurrentDir,
-    ExtractFilePath(ParamStr(0)),
-    ExpandFileName(IncludeTrailingPathDelimiter(GetCurrentDir) + '..'),
-    ExpandFileName(IncludeTrailingPathDelimiter(ExtractFilePath(ParamStr(0))) + '..'),
-    ExpandFileName(IncludeTrailingPathDelimiter(ExtractFilePath(ParamStr(0))) + '..\..'),
-    ExpandFileName(IncludeTrailingPathDelimiter(ExtractFilePath(ParamStr(0))) + '..\..\..'));
+  Dirs := WadSearchDirs;
   for Dir in Dirs do
     for Name in Names do
     begin
+      if Dir = '' then
+        Continue;
       Candidate := IncludeTrailingPathDelimiter(Dir) + Name;
       if FileExists(Candidate) then
         Exit(Candidate);

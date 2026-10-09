@@ -14,7 +14,8 @@ unit uMain;
   O form pinta o quadro de 320x200. Esc abre o menu.
   Novo jogo mostra a vista. As setas andam e viram, Ctrl atira.
   Espaco e E usam portas e interruptores. A saida carrega o mapa seguinte.
-  No Android, Use age na fase e abre o menu no titulo. Fire atira.
+  No Android a tela fica deitada. Os botoes transparentes ficam sobre o jogo.
+  Use age na fase e abre o menu no titulo. Fire atira.
   Menos e mais mudam o tamanho da janela. Alt+Enter alterna a tela cheia.
 }
 
@@ -36,10 +37,14 @@ type
     BtnRight: TButton;
     BtnFire: TButton;
     BtnUse: TButton;
+    BtnWeapon: TButton;
+    BtnRun: TButton;
+    BtnSide: TButton;
     GameTimer: TTimer;
     procedure FormCreate(Sender: TObject);
     procedure FormDestroy(Sender: TObject);
     procedure FormShown(Sender: TObject);
+    procedure FormResize(Sender: TObject);
     procedure FormKeyDown(Sender: TObject; var Key: Word; var KeyChar: WideChar; Shift: TShiftState);
     procedure FormKeyUp(Sender: TObject; var Key: Word; var KeyChar: WideChar; Shift: TShiftState);
     procedure PadDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single);
@@ -77,6 +82,8 @@ type
     FPadLeft: Boolean;
     FPadRight: Boolean;
     FPadFire: Boolean;
+    FRunLock: Boolean;
+    FSideLock: Boolean;
     FHoldUp: Boolean;
     FHoldDown: Boolean;
     FHoldLeft: Boolean;
@@ -153,6 +160,11 @@ type
     procedure RememberCarry;
     procedure ReadArgs;
     procedure ApplyWindow;
+    procedure LockLandscape;
+    procedure StylePad(Btn: TButton);
+    procedure PlacePad;
+    procedure NextWeapon;
+    procedure ShowToggle(Btn: TButton; On: Boolean);
     procedure ToggleFull;
     procedure ChangeScale(Delta: Integer);
     procedure BuildCrt(Dw, Dh: Integer);
@@ -175,13 +187,16 @@ implementation
 
 uses
   System.Math, System.StrUtils, Doom.Compat, Doom.VVideo, Doom.Sound
-  {$IFDEF MSWINDOWS}, Winapi.Windows{$ENDIF};
+  {$IFDEF MSWINDOWS}, Winapi.Windows{$ENDIF}
+  {$IFDEF ANDROID}, Androidapi.Helpers, Androidapi.JNI.App, Androidapi.JNI.GraphicsContentViewText{$ENDIF};
 
 const
   VK_COMMA = 188;
   VK_PERIOD = 190;
   VK_SPACE = 32;
   VK_E = 69;
+
+function ScreenColor(const Data: TBitmapData; Color: TAlphaColor): TAlphaColor; forward;
 
 {$R *.fmx}
 
@@ -676,15 +691,11 @@ begin
   if FileExists(Spec) then
     Exit(ExpandFileName(Spec));
   Name := ExtractFileName(Spec);
-  Dirs := TArray<string>.Create(
-    GetCurrentDir,
-    ExtractFilePath(ParamStr(0)),
-    ExpandFileName(IncludeTrailingPathDelimiter(GetCurrentDir) + '..'),
-    ExpandFileName(IncludeTrailingPathDelimiter(ExtractFilePath(ParamStr(0))) + '..'),
-    ExpandFileName(IncludeTrailingPathDelimiter(ExtractFilePath(ParamStr(0))) + '..\..'),
-    ExpandFileName(IncludeTrailingPathDelimiter(ExtractFilePath(ParamStr(0))) + '..\..\..'));
+  Dirs := WadSearchDirs;
   for Dir in Dirs do
   begin
+    if Dir = '' then
+      Continue;
     Candidate := IncludeTrailingPathDelimiter(Dir) + Name;
     if FileExists(Candidate) then
       Exit(Candidate);
@@ -787,6 +798,128 @@ begin
     end;
     Inc(I);
   end;
+end;
+
+procedure TFormMain.LockLandscape;
+{$IFDEF ANDROID}
+var
+  Window: JWindow;
+  Decor: JView;
+{$ENDIF}
+begin
+  {$IFDEF ANDROID}
+  FullScreen := True;
+  if TAndroidHelper.Activity = nil then
+    Exit;
+  TAndroidHelper.Activity.setRequestedOrientation(
+    TJActivityInfo.JavaClass.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+  Window := TAndroidHelper.Activity.getWindow;
+  if Window = nil then
+    Exit;
+  Window.setFlags(TJWindowManager_LayoutParams.JavaClass.FLAG_FULLSCREEN,
+    TJWindowManager_LayoutParams.JavaClass.FLAG_FULLSCREEN);
+  Decor := Window.getDecorView;
+  if Decor <> nil then
+    Decor.setSystemUiVisibility(
+      TJView.JavaClass.SYSTEM_UI_FLAG_FULLSCREEN or
+      TJView.JavaClass.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+      TJView.JavaClass.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+      TJView.JavaClass.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+      TJView.JavaClass.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
+      TJView.JavaClass.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+  {$ENDIF}
+end;
+
+procedure TFormMain.StylePad(Btn: TButton);
+var
+  Back: TFmxObject;
+begin
+  if Btn = nil then
+    Exit;
+  Btn.CanFocus := False;
+  Btn.StyledSettings := Btn.StyledSettings - [TStyledSetting.FontColor, TStyledSetting.Size];
+  Btn.TextSettings.FontColor := TAlphaColor($FFFFFFFF);
+  Btn.TextSettings.Font.Size := 16;
+  Btn.ApplyStyleLookup;
+  Back := Btn.FindStyleResource('background');
+  if Back is TShape then
+  begin
+    TShape(Back).Fill.Kind := TBrushKind.Solid;
+    TShape(Back).Fill.Color := TAlphaColor($40FFFFFF);
+    TShape(Back).Stroke.Kind := TBrushKind.Solid;
+    TShape(Back).Stroke.Color := TAlphaColor($C0FFFFFF);
+    if Back is TRectangle then
+    begin
+      TRectangle(Back).XRadius := 10;
+      TRectangle(Back).YRadius := 10;
+    end;
+    Btn.Opacity := 1;
+  end
+  else
+    Btn.Opacity := 0.4;
+end;
+
+procedure TFormMain.ShowToggle(Btn: TButton; On: Boolean);
+begin
+  if Btn = nil then
+    Exit;
+  if On then
+    Btn.Opacity := 1
+  else
+    Btn.Opacity := 0.45;
+end;
+
+procedure TFormMain.NextWeapon;
+var
+  I, N: Integer;
+begin
+  if (FPlayer = nil) or (FPlayer.Health <= 0) then
+    Exit;
+  for I := 1 to 7 do
+  begin
+    N := (FPlayer.Weapon + I) mod 7;
+    if FPlayer.Owned[N] then
+    begin
+      FPlayer.SelectWeapon(N);
+      Exit;
+    end;
+  end;
+end;
+
+procedure TFormMain.PlacePad;
+var
+  S, G, M, Bot, Wide, Row, Third: Single;
+begin
+  if not LayPad.Visible then
+    Exit;
+  LayPad.Align := TAlignLayout.Contents;
+  LayPad.HitTest := False;
+  LayPad.BringToFront;
+  S := 58;
+  if ClientHeight < 340 then
+    S := 48;
+  G := 4;
+  M := 10;
+  Bot := ClientHeight - S - 8;
+  BtnLeft.SetBounds(M, Bot, S, S);
+  BtnDown.SetBounds(M + S + G, Bot, S, S);
+  BtnRight.SetBounds(M + (S + G) * 2, Bot, S, S);
+  BtnUp.SetBounds(M + S + G, Bot - S - G, S, S);
+  Wide := S * 1.45;
+  Row := Wide * 2 + G;
+  Third := (Row - G * 2) / 3;
+  BtnFire.SetBounds(ClientWidth - M - Row, Bot, Wide, S);
+  BtnUse.SetBounds(ClientWidth - M - Wide, Bot, Wide, S);
+  BtnWeapon.SetBounds(ClientWidth - M - Row, Bot - S - G, Third, S);
+  BtnRun.SetBounds(ClientWidth - M - Row + Third + G, Bot - S - G, Third, S);
+  BtnSide.SetBounds(ClientWidth - M - Third, Bot - S - G, Third, S);
+  ShowToggle(BtnRun, FRunLock);
+  ShowToggle(BtnSide, FSideLock);
+end;
+
+procedure TFormMain.FormResize(Sender: TObject);
+begin
+  PlacePad;
 end;
 
 procedure TFormMain.ApplyWindow;
@@ -1203,13 +1336,23 @@ begin
   FWipeState := GS_TITLE;
   FMenu := TDoomMenu.Create(FWad, FHost);
   AdvanceDemo;
-  BtnUp.CanFocus := False;
-  BtnDown.CanFocus := False;
-  BtnLeft.CanFocus := False;
-  BtnRight.CanFocus := False;
-  BtnFire.CanFocus := False;
-  BtnUse.CanFocus := False;
   LayPad.Visible := TOSVersion.Platform = pfAndroid;
+  if LayPad.Visible then
+  begin
+    LockLandscape;
+    StylePad(BtnUp);
+    StylePad(BtnDown);
+    StylePad(BtnLeft);
+    StylePad(BtnRight);
+    StylePad(BtnFire);
+    StylePad(BtnUse);
+    StylePad(BtnWeapon);
+    StylePad(BtnRun);
+    StylePad(BtnSide);
+    ShowToggle(BtnRun, FRunLock);
+    ShowToggle(BtnSide, FSideLock);
+    PlacePad;
+  end;
   OnShow := FormShown;
   if not FWantFull then
     ApplyWindow;
@@ -1235,6 +1378,22 @@ end;
 
 procedure TFormMain.FormShown(Sender: TObject);
 begin
+  if LayPad.Visible then
+  begin
+    LockLandscape;
+    StylePad(BtnUp);
+    StylePad(BtnDown);
+    StylePad(BtnLeft);
+    StylePad(BtnRight);
+    StylePad(BtnFire);
+    StylePad(BtnUse);
+    StylePad(BtnWeapon);
+    StylePad(BtnRun);
+    StylePad(BtnSide);
+    ShowToggle(BtnRun, FRunLock);
+    ShowToggle(BtnSide, FSideLock);
+    PlacePad;
+  end;
   if FWantFull then
     FullScreen := True
   else if not FullScreen then
@@ -1301,6 +1460,20 @@ begin
       FUseEdge := True
     else
       FeedKey(KEY_ESCAPE, '');
+  end
+  else if Sender = BtnWeapon then
+    NextWeapon
+  else if Sender = BtnRun then
+  begin
+    FRunLock := not FRunLock;
+    FHoldRun := FRunLock;
+    ShowToggle(BtnRun, FRunLock);
+  end
+  else if Sender = BtnSide then
+  begin
+    FSideLock := not FSideLock;
+    FHoldStrafe := FSideLock;
+    ShowToggle(BtnSide, FSideLock);
   end;
 end;
 
@@ -1492,6 +1665,11 @@ begin
       OldX := FPlayer.X;
       OldY := FPlayer.Y;
       SyncHolds;
+      if LayPad.Visible then
+      begin
+        FHoldRun := FRunLock;
+        FHoldStrafe := FSideLock;
+      end;
       FPlayer.Tick(FWorld, FHoldUp, FHoldDown, FHoldLeft, FHoldRight, FHoldFire, FHoldRun,
         FHoldStrafe, FHoldSideL, FHoldSideR);
       if FStatus <> nil then
@@ -1785,9 +1963,9 @@ begin
             G := 255;
           if B > 255 then
             B := 255;
-          Color := TAlphaColor($FF000000 or (R shl 16) or (G shl 8) or B);
+          Color := TAlphaColor($FF000000 or Cardinal(R shl 16) or Cardinal(G shl 8) or Cardinal(B));
         end;
-        PAlphaColor(Row)^ := Color;
+        PAlphaColor(Row)^ := ScreenColor(Data, Color);
         Inc(Row, 4);
       end;
     end;
@@ -1808,6 +1986,21 @@ begin
   FFpsLabel.Position.X := ClientWidth - FFpsLabel.Width - 8;
   FFpsLabel.Position.Y := 4;
   FFpsLabel.BringToFront;
+end;
+
+function ScreenColor(const Data: TBitmapData; Color: TAlphaColor): TAlphaColor;
+var
+  R, G, B: Cardinal;
+begin
+  if Data.PixelFormat = TPixelFormat.RGBA then
+  begin
+    R := (Color shr 16) and $FF;
+    G := (Color shr 8) and $FF;
+    B := Color and $FF;
+    Result := TAlphaColor($FF000000 or (B shl 16) or (G shl 8) or R);
+  end
+  else
+    Result := Color;
 end;
 
 procedure TFormMain.PaintFrame;
@@ -1836,7 +2029,7 @@ begin
           Color := FPal[FFb[Y * SCREENWIDTH + X]]
         else
           Color := $FF181818;
-        PAlphaColor(Row)^ := Color;
+        PAlphaColor(Row)^ := ScreenColor(Data, Color);
         Inc(Row, 4);
       end;
     end;
