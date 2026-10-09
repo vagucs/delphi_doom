@@ -12,8 +12,8 @@ unit Doom.Sound;
   www.vagucs.com.br
 
   Efeitos DS* em PCM e musica MUS convertida para MIDI.
-  No Windows a musica usa a MCI. No Android os efeitos saem pelo AudioTrack.
-  A musica continua so no Windows.
+  No Windows a musica usa a MCI. No Android os efeitos e a musica
+  saem pelo AudioTrack: a MUS vira MIDI e um sintetizador toca as notas.
 }
 
 interface
@@ -28,6 +28,7 @@ const
   VOICES = 8;
   MIXSLOTS = 3;
   CHUNK = 315;
+  SONGNOTES = 24;
 
 type
   TVoice = record
@@ -48,6 +49,30 @@ type
 {$ENDIF}
 
 type
+  TSongEv = record
+    Tick: Integer;
+    Kind: Byte;
+    Ch: Byte;
+    A: Byte;
+    B: Byte;
+    Tempo: Integer;
+  end;
+
+  TSongNote = record
+    On: Boolean;
+    Decay: Boolean;
+    Drum: Boolean;
+    Stage: Byte;
+    Ch: Byte;
+    Note: Byte;
+    Wave: Byte;
+    Vel: Integer;
+    Env: Integer;
+    Phase: Cardinal;
+    Inc: Cardinal;
+    Noise: Cardinal;
+  end;
+
   TGameSound = class
   public
     constructor Create;
@@ -76,9 +101,29 @@ type
     FTrack: JAudioTrack;
     FTrackBuf: TJavaArray<Byte>;
     FSamplesOut: Integer;
+    FSongOn: Boolean;
+    FEvents: array of TSongEv;
+    FEvCount: Integer;
+    FEvPos: Integer;
+    FMusTick: Integer;
+    FTickFrac: Int64;
+    FTempo: Integer;
+    FDivision: Integer;
+    FSongSamp: Integer;
+    FChanProg: array[0..15] of Integer;
+    FChanVol: array[0..15] of Integer;
+    FChanExpr: array[0..15] of Integer;
+    FChanBend: array[0..15] of Integer;
+    FNotes: array[0..SONGNOTES - 1] of TSongNote;
     procedure OpenTrack;
     procedure CloseTrack;
     procedure WriteMix;
+    function LoadSong(const Midi: TBytes): Boolean;
+    procedure RenderSong(var Mix: array of Integer);
+    procedure SongApply(const Ev: TSongEv);
+    procedure SongNoteOn(Ch, Note, Vel: Integer);
+    procedure SongNoteOff(Ch, Note: Integer);
+    procedure SongAllOff;
     {$ENDIF}
     {$IFDEF MSWINDOWS}
     FWave: HWAVEOUT;
@@ -118,6 +163,10 @@ const
 
 var
   GSound: TGameSound;
+  {$IFDEF ANDROID}
+  GSineReady: Boolean;
+  GSine: array[0..1023] of SmallInt;
+  {$ENDIF}
 
 procedure PlaySfx(const Name: string);
 begin
@@ -635,18 +684,18 @@ begin
 end;
 
 procedure TGameSound.ChangeMusic(const Name: string; Looping: Boolean);
-{$IFDEF MSWINDOWS}
 var
-  Lump, Path: string;
+  Lump: string;
   N: Integer;
   Midi: TBytes;
+  {$IFDEF MSWINDOWS}
+  Path: string;
   Fs: TFileStream;
   Buf: array[0..MAX_PATH] of Char;
-{$ENDIF}
+  {$ENDIF}
 begin
   if not GAllowMusic then
     Exit;
-  {$IFDEF MSWINDOWS}
   if (FWad = nil) or (Name = '') then
     Exit;
   if SameText(Name, FMusicName) then
@@ -658,9 +707,11 @@ begin
   Midi := MusToMidi(FWad.CacheLumpNum(N));
   if Length(Midi) < 22 then
     Exit;
+  StopMusic;
+  FMusicLoop := Looping;
+  {$IFDEF MSWINDOWS}
   if GetTempPath(MAX_PATH, Buf) = 0 then
     Exit;
-  StopMusic;
   Path := IncludeTrailingPathDelimiter(Buf) + 'doommus.mid';
   try
     Fs := TFileStream.Create(Path, fmCreate);
@@ -675,7 +726,6 @@ begin
   end;
   FMusicPath := Path;
   FMusicName := LowerCase(Name);
-  FMusicLoop := Looping;
   Mci('close doommus');
   if Mci('open "' + Path + '" type sequencer alias doommus') <> 0 then
     if Mci('open "' + Path + '" alias doommus') <> 0 then
@@ -691,11 +741,12 @@ begin
   end;
   FMusicOn := True;
   Mci('setaudio doommus volume to ' + IntToStr(FMusicVol * 1000 div 15));
-  {$ELSE}
-  FMusicName := '';
-  FMusicLoop := Looping;
-  if Name = '' then
-    Exit;
+  {$ENDIF}
+  {$IFDEF ANDROID}
+  if LoadSong(Midi) then
+    FMusicName := LowerCase(Name)
+  else
+    FMusicLoop := False;
   {$ENDIF}
 end;
 
@@ -705,6 +756,12 @@ begin
   if FMusicOn then
     Mci('close doommus');
   FMusicOn := False;
+  {$ENDIF}
+  {$IFDEF ANDROID}
+  FSongOn := False;
+  SongAllOff;
+  FEvCount := 0;
+  FEvPos := 0;
   {$ENDIF}
   FMusicName := '';
   FMusicLoop := False;
@@ -860,6 +917,555 @@ end;
 {$ENDIF}
 
 {$IFDEF ANDROID}
+procedure EnsureSine;
+var
+  I: Integer;
+begin
+  if GSineReady then
+    Exit;
+  for I := 0 to 1023 do
+    GSine[I] := Round(Sin(2 * Pi * I / 1024) * 10000);
+  GSineReady := True;
+end;
+
+function WaveFor(Prog: Integer; out Decay: Boolean): Integer;
+begin
+  Decay := False;
+  case Prog div 8 of
+    0, 1:
+      begin
+        Result := 0;
+        Decay := True;
+      end;
+    3:
+      begin
+        Result := 2;
+        Decay := True;
+      end;
+    4:
+      begin
+        Result := 0;
+        Decay := True;
+      end;
+    5, 6, 11: Result := 3;
+    14, 15:
+      begin
+        Result := 4;
+        Decay := True;
+      end;
+    2, 8, 9: Result := 1;
+  else
+    Result := 2;
+  end;
+end;
+
+procedure TGameSound.SongAllOff;
+var
+  I: Integer;
+begin
+  for I := 0 to SONGNOTES - 1 do
+    FNotes[I].On := False;
+end;
+
+procedure TGameSound.SongNoteOff(Ch, Note: Integer);
+var
+  I: Integer;
+begin
+  for I := 0 to SONGNOTES - 1 do
+    if FNotes[I].On and (FNotes[I].Ch = Ch) and (FNotes[I].Note = Note) and (FNotes[I].Stage < 2) then
+      FNotes[I].Stage := 2;
+end;
+
+procedure TGameSound.SongNoteOn(Ch, Note, Vel: Integer);
+var
+  I, Slot: Integer;
+  Decay: Boolean;
+  Freq, Limit: Double;
+begin
+  if (Ch < 0) or (Ch > 15) then
+    Exit;
+  if Vel <= 0 then
+  begin
+    SongNoteOff(Ch, Note);
+    Exit;
+  end;
+  if Ch <> 9 then
+    for I := 0 to SONGNOTES - 1 do
+      if FNotes[I].On and (FNotes[I].Ch = Ch) and (FNotes[I].Stage < 2) then
+        FNotes[I].Stage := 2;
+  Slot := -1;
+  for I := 0 to SONGNOTES - 1 do
+    if not FNotes[I].On then
+    begin
+      Slot := I;
+      Break;
+    end;
+  if Slot < 0 then
+  begin
+    Slot := 0;
+    for I := 1 to SONGNOTES - 1 do
+      if FNotes[I].Env < FNotes[Slot].Env then
+        Slot := I;
+  end;
+  FNotes[Slot].On := True;
+  FNotes[Slot].Ch := Ch;
+  FNotes[Slot].Note := Note;
+  FNotes[Slot].Drum := Ch = 9;
+  FNotes[Slot].Vel := Vel;
+  FNotes[Slot].Env := 0;
+  FNotes[Slot].Stage := 0;
+  FNotes[Slot].Phase := 0;
+  FNotes[Slot].Noise := Cardinal(Note * 131 + Ch * 17 + 1);
+    if FNotes[Slot].Drum then
+    begin
+      FNotes[Slot].Decay := True;
+      case Note of
+        35, 36, 41, 43, 45, 47, 48, 50: FNotes[Slot].Wave := 0;
+      else
+        FNotes[Slot].Wave := 4;
+      end;
+    if FNotes[Slot].Wave = 0 then
+      Freq := 48 + Note * 2
+    else
+      Freq := 200 + Note * 12;
+  end
+  else
+  begin
+    FNotes[Slot].Wave := WaveFor(FChanProg[Ch], Decay);
+    FNotes[Slot].Decay := Decay;
+    Freq := 440.0 * Power(2.0, (Note - 69) / 12.0);
+  end;
+  Limit := MIXRATE * 0.45;
+  if Freq > Limit then
+    Freq := Limit;
+  if Freq < 20 then
+    Freq := 20;
+  Limit := Freq / MIXRATE * 4294967296.0;
+  if Limit > 4294967295.0 then
+    Limit := 4294967295.0;
+  FNotes[Slot].Inc := Round(Limit);
+  if FNotes[Slot].Inc = 0 then
+    FNotes[Slot].Inc := 1;
+end;
+
+procedure TGameSound.SongApply(const Ev: TSongEv);
+var
+  I: Integer;
+begin
+  if Ev.Ch > 15 then
+    Exit;
+  case Ev.Kind of
+    1: SongNoteOn(Ev.Ch, Ev.A, Ev.B);
+    2: SongNoteOff(Ev.Ch, Ev.A);
+    3: FChanProg[Ev.Ch] := Ev.A and 127;
+    4:
+      case Ev.A of
+        7: FChanVol[Ev.Ch] := Ev.B and 127;
+        11: FChanExpr[Ev.Ch] := Ev.B and 127;
+        120, 123:
+          for I := 0 to SONGNOTES - 1 do
+            if FNotes[I].On and (FNotes[I].Ch = Ev.Ch) and (FNotes[I].Stage < 2) then
+              FNotes[I].Stage := 2;
+      end;
+    5: FChanBend[Ev.Ch] := (Ev.A and 127) or ((Ev.B and 127) shl 7);
+    6:
+      if Ev.Tempo > 1000 then
+        FTempo := Ev.Tempo;
+  end;
+end;
+
+function TGameSound.LoadSong(const Midi: TBytes): Boolean;
+var
+  P, EndP, Status, Running, Delta, Time, Kind, Len, B1, B2, C: Integer;
+  Ev: TSongEv;
+
+  function ReadB: Integer;
+  begin
+    if P >= Length(Midi) then
+      Exit(-1);
+    Result := Midi[P];
+    Inc(P);
+  end;
+
+  function ReadVLQ: Integer;
+  var
+    V, N: Integer;
+  begin
+    Result := 0;
+    N := 0;
+    repeat
+      V := ReadB;
+      if V < 0 then
+        Exit(-1);
+      Result := (Result shl 7) or (V and $7F);
+      Inc(N);
+      if N > 4 then
+        Exit(-1);
+    until (V and $80) = 0;
+  end;
+
+  procedure Push(const Item: TSongEv);
+  begin
+    if FEvCount >= Length(FEvents) then
+      SetLength(FEvents, FEvCount + 256);
+    FEvents[FEvCount] := Item;
+    Inc(FEvCount);
+  end;
+
+begin
+  Result := False;
+  FSongOn := False;
+  FEvCount := 0;
+  FEvPos := 0;
+  FMusTick := 0;
+  FTickFrac := 0;
+  FSongSamp := 0;
+  FTempo := 500000;
+  if Length(Midi) < 22 then
+    Exit;
+  if (Midi[0] <> $4D) or (Midi[1] <> $54) or (Midi[2] <> $68) or (Midi[3] <> $64) then
+    Exit;
+  FDivision := (Midi[12] shl 8) or Midi[13];
+  if (FDivision <= 0) or ((FDivision and $8000) <> 0) then
+    FDivision := 70;
+  if (Midi[14] <> $4D) or (Midi[15] <> $54) or (Midi[16] <> $72) or (Midi[17] <> $6B) then
+    Exit;
+  EndP := 22 + Integer((Cardinal(Midi[18]) shl 24) or (Cardinal(Midi[19]) shl 16) or
+    (Cardinal(Midi[20]) shl 8) or Midi[21]);
+  if EndP > Length(Midi) then
+    EndP := Length(Midi);
+  if EndP < 22 then
+    Exit;
+  P := 22;
+  Time := 0;
+  Running := 0;
+  while P < EndP do
+  begin
+    Delta := ReadVLQ;
+    if Delta < 0 then
+      Break;
+    Inc(Time, Delta);
+    Status := ReadB;
+    if Status < 0 then
+      Break;
+    if Status < $80 then
+    begin
+      if Running = 0 then
+        Break;
+      Dec(P);
+      Status := Running;
+    end
+    else if Status < $F0 then
+      Running := Status;
+    FillChar(Ev, SizeOf(Ev), 0);
+    Ev.Tick := Time;
+    Ev.Ch := Status and $0F;
+    if Status = $FF then
+    begin
+      Kind := ReadB;
+      Len := ReadVLQ;
+      if (Kind < 0) or (Len < 0) or (P + Len > Length(Midi)) then
+        Break;
+      if (Kind = $51) and (Len = 3) then
+      begin
+        B1 := ReadB;
+        B2 := ReadB;
+        Status := ReadB;
+        if (B1 < 0) or (B2 < 0) or (Status < 0) then
+          Break;
+        Ev.Kind := 6;
+        Ev.Tempo := (B1 shl 16) or (B2 shl 8) or Status;
+        if Ev.Tempo > 0 then
+          Push(Ev);
+      end
+      else
+      begin
+        if Kind = $2F then
+        begin
+          Ev.Kind := 7;
+          Push(Ev);
+        end;
+        Inc(P, Len);
+      end;
+    end
+    else if (Status and $F0) = $F0 then
+    begin
+      Len := ReadVLQ;
+      if (Len < 0) or (P + Len > Length(Midi)) then
+        Break;
+      Inc(P, Len);
+      Running := 0;
+    end
+    else
+      case Status and $F0 of
+        $80:
+          begin
+            B1 := ReadB;
+            B2 := ReadB;
+            if (B1 < 0) or (B2 < 0) then
+              Break;
+            Ev.Kind := 2;
+            Ev.A := B1;
+            Push(Ev);
+          end;
+        $90:
+          begin
+            B1 := ReadB;
+            B2 := ReadB;
+            if (B1 < 0) or (B2 < 0) then
+              Break;
+            if B2 = 0 then
+              Ev.Kind := 2
+            else
+              Ev.Kind := 1;
+            Ev.A := B1;
+            Ev.B := B2;
+            Push(Ev);
+          end;
+        $A0:
+          begin
+            if ReadB < 0 then
+              Break;
+            if ReadB < 0 then
+              Break;
+          end;
+        $B0:
+          begin
+            B1 := ReadB;
+            B2 := ReadB;
+            if (B1 < 0) or (B2 < 0) then
+              Break;
+            Ev.Kind := 4;
+            Ev.A := B1;
+            Ev.B := B2;
+            Push(Ev);
+          end;
+        $C0:
+          begin
+            B1 := ReadB;
+            if B1 < 0 then
+              Break;
+            Ev.Kind := 3;
+            Ev.A := B1;
+            Push(Ev);
+          end;
+        $D0:
+          if ReadB < 0 then
+            Break;
+        $E0:
+          begin
+            B1 := ReadB;
+            B2 := ReadB;
+            if (B1 < 0) or (B2 < 0) then
+              Break;
+            Ev.Kind := 5;
+            Ev.A := B1;
+            Ev.B := B2;
+            Push(Ev);
+          end;
+      else
+        Break;
+      end;
+  end;
+  SetLength(FEvents, FEvCount);
+  if FEvCount = 0 then
+    Exit;
+  for C := 0 to 15 do
+  begin
+    FChanProg[C] := 0;
+    FChanVol[C] := 100;
+    FChanExpr[C] := 127;
+    FChanBend[C] := 8192;
+  end;
+  SongAllOff;
+  EnsureSine;
+  FSongOn := True;
+  Result := True;
+end;
+
+procedure TGameSound.RenderSong(var Mix: array of Integer);
+var
+  I, Guard, S, Bend, Idx: Integer;
+  Limit, IncP: Int64;
+  Note: TSongNote;
+  P: Cardinal;
+
+  procedure ResetChans;
+  var
+    C: Integer;
+  begin
+    for C := 0 to 15 do
+    begin
+      FChanProg[C] := 0;
+      FChanVol[C] := 100;
+      FChanExpr[C] := 127;
+      FChanBend[C] := 8192;
+    end;
+  end;
+
+  procedure Consume;
+  var
+    Ev: TSongEv;
+  begin
+    Guard := 0;
+    while FSongOn do
+    begin
+      if FEvPos >= FEvCount then
+        Exit;
+      if FEvents[FEvPos].Tick > FMusTick then
+        Exit;
+      Ev := FEvents[FEvPos];
+      Inc(FEvPos);
+      if Ev.Kind = 7 then
+      begin
+        if not FMusicLoop then
+        begin
+          FEvPos := FEvCount;
+          Exit;
+        end;
+        Inc(Guard);
+        if Guard > 2 then
+          Exit;
+        FMusTick := 0;
+        FTickFrac := 0;
+        FEvPos := 0;
+        SongAllOff;
+        ResetChans;
+        Continue;
+      end;
+      SongApply(Ev);
+    end;
+  end;
+
+begin
+  if not FSongOn or (FMusicVol <= 0) then
+    Exit;
+  EnsureSine;
+  for I := 0 to High(Mix) do
+  begin
+    if not FSongOn then
+      Break;
+    Consume;
+    Inc(FSongSamp);
+    for Idx := 0 to SONGNOTES - 1 do
+    begin
+      if not FNotes[Idx].On then
+        Continue;
+      Note := FNotes[Idx];
+      if Note.Stage = 0 then
+      begin
+        Inc(Note.Env, 64);
+        if Note.Env >= 1024 then
+        begin
+          Note.Env := 1024;
+          Note.Stage := 1;
+        end;
+      end
+      else if Note.Stage = 2 then
+      begin
+        Dec(Note.Env);
+        if Note.Env <= 0 then
+          Note.On := False;
+      end
+      else if Note.Drum then
+      begin
+        if Note.Wave = 4 then
+          Dec(Note.Env, 5)
+        else if (FSongSamp and 1) = 0 then
+          Dec(Note.Env);
+        if Note.Env <= 0 then
+          Note.On := False;
+      end
+      else if Note.Decay and (Note.Env > 400) and ((FSongSamp and 3) = 0) then
+        Dec(Note.Env);
+      if not Note.On then
+      begin
+        FNotes[Idx] := Note;
+        Continue;
+      end;
+      Bend := FChanBend[Note.Ch] - 8192;
+      if Note.Drum then
+        IncP := Note.Inc
+      else
+        IncP := Note.Inc + Int64(Note.Inc) * Bend div 49152;
+      if IncP < 1 then
+        IncP := 1;
+      P := Note.Phase;
+      case Note.Wave of
+        1:
+          if (P and $80000000) = 0 then
+            S := 9000
+          else
+            S := -9000;
+        2:
+          begin
+            S := Integer(P shr 16) - 32768;
+            if S > 9000 then
+              S := 9000 + (S - 9000) div 4;
+            if S < -9000 then
+              S := -9000 + (S + 9000) div 4;
+          end;
+        3:
+          begin
+            Bend := (P shr 21) and 2047;
+            if Bend < 1024 then
+              S := Bend * 16 - 8192
+            else
+              S := (2048 - Bend) * 16 - 8192;
+          end;
+        4:
+          begin
+            Note.Noise := Note.Noise xor (Note.Noise shl 13);
+            Note.Noise := Note.Noise xor (Note.Noise shr 17);
+            Note.Noise := Note.Noise xor (Note.Noise shl 5);
+            if Note.Noise = 0 then
+              Note.Noise := 1;
+            S := Integer(Note.Noise and $FFFF);
+            if S >= 32768 then
+              Dec(S, 65536);
+            S := S div 2;
+          end;
+      else
+        S := GSine[P shr 22];
+        if Note.Wave = 0 then
+          S := S + S div 2;
+      end;
+      Inc(Note.Phase, Cardinal(IncP));
+      S := S * Note.Env div 1024;
+      S := S * Note.Vel div 127;
+      S := S * FChanVol[Note.Ch] div 127;
+      S := S * FChanExpr[Note.Ch] div 127;
+      S := S * FMusicVol div 15;
+      Inc(Mix[I], S);
+      FNotes[Idx] := Note;
+    end;
+    if (not FMusicLoop) and (FEvPos >= FEvCount) then
+    begin
+      Guard := 0;
+      for Idx := 0 to SONGNOTES - 1 do
+        if FNotes[Idx].On then
+          Inc(Guard);
+      if Guard = 0 then
+        FSongOn := False;
+    end;
+    if not FSongOn then
+      Break;
+    Inc(FTickFrac, FDivision * 1000);
+    Limit := Int64(MIXRATE) * FTempo div 1000;
+    if Limit < 1 then
+      Limit := 1;
+    while FTickFrac >= Limit do
+    begin
+      Dec(FTickFrac, Limit);
+      Inc(FMusTick);
+      Consume;
+      Limit := Int64(MIXRATE) * FTempo div 1000;
+      if Limit < 1 then
+        Limit := 1;
+    end;
+  end;
+end;
+
 procedure TGameSound.OpenTrack;
 var
   Min: Integer;
@@ -921,10 +1527,14 @@ begin
     Room := 0;
   if Room > CHUNK * 4 then
     Exit;
-  Busy := False;
-  for V := 0 to VOICES - 1 do
-    if FVoices[V].Active then
-      Busy := True;
+  Busy := FSongOn;
+  if not Busy then
+    for V := 0 to VOICES - 1 do
+      if FVoices[V].Active then
+      begin
+        Busy := True;
+        Break;
+      end;
   if not Busy then
     Exit;
   for I := 0 to CHUNK - 1 do
@@ -948,6 +1558,8 @@ begin
       Inc(FVoices[V].Pos, 2);
     end;
   end;
+  if FSongOn then
+    RenderSong(Mix);
   SetLength(Raw, CHUNK * 2);
   for I := 0 to CHUNK - 1 do
   begin

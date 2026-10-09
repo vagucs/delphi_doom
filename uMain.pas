@@ -24,7 +24,7 @@ interface
 uses
   System.SysUtils, System.Types, System.UITypes, System.Classes,
   FMX.Types, FMX.Controls, FMX.Forms, FMX.Graphics, FMX.StdCtrls, FMX.Objects,
-  FMX.Layouts, Doom.Wad, Doom.Menu, Doom.World, Doom.RData, Doom.Render,   Doom.Player,
+  FMX.Layouts, FMX.ListBox, FMX.Edit, Doom.Wad, Doom.Menu, Doom.World, Doom.RData, Doom.Render,   Doom.Player,
   Doom.Specials, Doom.Enemy, Doom.Status, Doom.Wipe, Doom.Inter, Doom.AutoMap, Doom.Finale;
 
 type
@@ -40,6 +40,7 @@ type
     BtnWeapon: TButton;
     BtnRun: TButton;
     BtnSide: TButton;
+    BtnEsc: TButton;
     GameTimer: TTimer;
     procedure FormCreate(Sender: TObject);
     procedure FormDestroy(Sender: TObject);
@@ -84,6 +85,19 @@ type
     FPadFire: Boolean;
     FRunLock: Boolean;
     FSideLock: Boolean;
+    FPick: TLayout;
+    FPickList: TListBox;
+    FPickUrl: TEdit;
+    FPickUrlBack: TRectangle;
+    FPickStatus: TLabel;
+    FPickGet: TButton;
+    FPickPlay: TButton;
+    FPickTrack: TRectangle;
+    FPickFill: TRectangle;
+    FPicked: string;
+    FGetting: Boolean;
+    FDlTick: Cardinal;
+    FDlTotal: Int64;
     FHoldUp: Boolean;
     FHoldDown: Boolean;
     FHoldLeft: Boolean;
@@ -165,6 +179,19 @@ type
     procedure PlacePad;
     procedure NextWeapon;
     procedure ShowToggle(Btn: TButton; On: Boolean);
+    procedure StartGame;
+    procedure BuildPicker;
+    procedure PlacePick;
+    procedure StyleUrlEdit(Sender: TObject);
+    procedure RefreshWadList;
+    procedure PickChanged(Sender: TObject);
+    procedure PickPlay(Sender: TObject);
+    procedure PickDownload(Sender: TObject);
+    procedure SetPickStatus(const S: string);
+    procedure ShowDl(ReadN, TotalN: Int64);
+    procedure QueueDl(ReadN, TotalN: Int64);
+    function DlPulse(ReadN, TotalN: Int64): Boolean;
+    procedure DlReceive(const Sender: TObject; AContentLength, AReadCount: Int64; var Abort: Boolean);
     procedure ToggleFull;
     procedure ChangeScale(Delta: Integer);
     procedure BuildCrt(Dw, Dh: Integer);
@@ -186,7 +213,7 @@ var
 implementation
 
 uses
-  System.Math, System.StrUtils, Doom.Compat, Doom.VVideo, Doom.Sound
+  System.Math, System.StrUtils, System.IOUtils, System.Net.HttpClient, Doom.Compat, Doom.VVideo, Doom.Sound
   {$IFDEF MSWINDOWS}, Winapi.Windows{$ENDIF}
   {$IFDEF ANDROID}, Androidapi.Helpers, Androidapi.JNI.App, Androidapi.JNI.GraphicsContentViewText{$ENDIF};
 
@@ -197,6 +224,13 @@ const
   VK_E = 69;
 
 function ScreenColor(const Data: TBitmapData; Color: TAlphaColor): TAlphaColor; forward;
+
+type
+  TWadStream = class(TFileStream)
+  public
+    Form: TFormMain;
+    function Write(const Buffer; Count: Longint): Longint; override;
+  end;
 
 {$R *.fmx}
 
@@ -913,6 +947,7 @@ begin
   BtnWeapon.SetBounds(ClientWidth - M - Row, Bot - S - G, Third, S);
   BtnRun.SetBounds(ClientWidth - M - Row + Third + G, Bot - S - G, Third, S);
   BtnSide.SetBounds(ClientWidth - M - Third, Bot - S - G, Third, S);
+  BtnEsc.SetBounds((ClientWidth - S * 1.6) / 2, 8, S * 1.6, S * 0.75);
   ShowToggle(BtnRun, FRunLock);
   ShowToggle(BtnSide, FSideLock);
 end;
@@ -920,6 +955,7 @@ end;
 procedure TFormMain.FormResize(Sender: TObject);
 begin
   PlacePad;
+  PlacePick;
 end;
 
 procedure TFormMain.ApplyWindow;
@@ -1309,6 +1345,420 @@ begin
   end;
 end;
 
+procedure TFormMain.StyleUrlEdit(Sender: TObject);
+var
+  Obj: TFmxObject;
+begin
+  if FPickUrl = nil then
+    Exit;
+  FPickUrl.StyledSettings := FPickUrl.StyledSettings - [TStyledSetting.FontColor, TStyledSetting.Size];
+  FPickUrl.TextSettings.Font.Size := 18;
+  FPickUrl.TextSettings.FontColor := TAlphaColor($FF111111);
+  Obj := FPickUrl.FindStyleResource('text');
+  if Obj is TText then
+    TText(Obj).TextSettings.FontColor := TAlphaColor($FF111111);
+  Obj := FPickUrl.FindStyleResource('prompt');
+  if Obj is TText then
+    TText(Obj).TextSettings.FontColor := TAlphaColor($FF666666);
+  Obj := FPickUrl.FindStyleResource('background');
+  if Obj is TRectangle then
+  begin
+    TRectangle(Obj).Fill.Kind := TBrushKind.Solid;
+    TRectangle(Obj).Fill.Color := TAlphaColorRec.White;
+  end;
+end;
+
+procedure TFormMain.PlacePick;
+var
+  TopY, ListTop, ListH, BtnW: Single;
+begin
+  if (FPick = nil) or not FPick.Visible then
+    Exit;
+  FPick.BringToFront;
+  TopY := 10;
+  BtnW := 120;
+  if FPickStatus <> nil then
+    FPickStatus.SetBounds(16, TopY, ClientWidth - 32, 26);
+  if FPickUrl <> nil then
+    FPickUrl.SetBounds(16, TopY + 28, ClientWidth - 32 - BtnW - 8, 44);
+  if (FPickUrlBack <> nil) and (FPickUrl <> nil) then
+    FPickUrlBack.SetBounds(FPickUrl.Position.X - 2, FPickUrl.Position.Y - 2,
+      FPickUrl.Width + 4, FPickUrl.Height + 4);
+  if (FPickGet <> nil) and (FPickUrl <> nil) then
+    FPickGet.SetBounds(FPickUrl.Position.X + FPickUrl.Width + 8, TopY + 28, BtnW, 44);
+  if FPickTrack <> nil then
+    FPickTrack.SetBounds(16, TopY + 78, ClientWidth - 32, 14);
+  if (FPickFill <> nil) and (FPickTrack <> nil) then
+    FPickFill.SetBounds(FPickTrack.Position.X, FPickTrack.Position.Y, FPickFill.Width, FPickTrack.Height);
+  ListTop := TopY + 100;
+  ListH := ClientHeight - ListTop - 58;
+  if ListH < 72 then
+    ListH := 72;
+  if FPickList <> nil then
+    FPickList.SetBounds(16, ListTop, ClientWidth - 32, ListH);
+  if FPickPlay <> nil then
+    FPickPlay.SetBounds(16, ListTop + ListH + 8, 160, 44);
+  if FPickStatus <> nil then
+    FPickStatus.BringToFront;
+  if FPickTrack <> nil then
+    FPickTrack.BringToFront;
+  if FPickFill <> nil then
+    FPickFill.BringToFront;
+  if FPickUrl <> nil then
+    FPickUrl.BringToFront;
+  if FPickGet <> nil then
+    FPickGet.BringToFront;
+  if FPickPlay <> nil then
+    FPickPlay.BringToFront;
+end;
+
+procedure TFormMain.SetPickStatus(const S: string);
+begin
+  if FPickStatus = nil then
+    Exit;
+  FPickStatus.StyledSettings := FPickStatus.StyledSettings - [TStyledSetting.FontColor, TStyledSetting.Size];
+  FPickStatus.TextSettings.FontColor := TAlphaColor($FFFFFF50);
+  FPickStatus.TextSettings.Font.Size := 16;
+  FPickStatus.Text := S;
+  FPickStatus.BringToFront;
+end;
+
+function TFormMain.DlPulse(ReadN, TotalN: Int64): Boolean;
+var
+  NowTick: Cardinal;
+begin
+  if TotalN > 0 then
+    FDlTotal := TotalN;
+  NowTick := TThread.GetTickCount;
+  if NowTick = 0 then
+    NowTick := 1;
+  Result := (FDlTick = 0) or (NowTick - FDlTick >= 150) or ((FDlTotal > 0) and (ReadN >= FDlTotal));
+  if Result then
+    FDlTick := NowTick;
+end;
+
+procedure TFormMain.QueueDl(ReadN, TotalN: Int64);
+begin
+  TThread.Queue(nil,
+    procedure
+    begin
+      ShowDl(ReadN, TotalN);
+    end);
+end;
+
+procedure TFormMain.DlReceive(const Sender: TObject; AContentLength, AReadCount: Int64; var Abort: Boolean);
+begin
+  if AContentLength > 0 then
+    FDlTotal := AContentLength;
+  if DlPulse(AReadCount, FDlTotal) then
+    QueueDl(AReadCount, FDlTotal);
+end;
+
+procedure TFormMain.ShowDl(ReadN, TotalN: Int64);
+  function FmtDl(N: Int64): string;
+  begin
+    if N >= 1048576 then
+      Result := Format('%.1f MB', [N / 1048576])
+    else if N >= 1024 then
+      Result := Format('%.0f KB', [N / 1024])
+    else
+      Result := IntToStr(N) + ' B';
+  end;
+var
+  Frac: Double;
+  Pct: Integer;
+begin
+  if not FGetting then
+    Exit;
+  if TotalN > 0 then
+  begin
+    Frac := ReadN / TotalN;
+    Pct := Round(Frac * 100);
+    if Pct > 100 then
+      Pct := 100;
+    if Pct < 0 then
+      Pct := 0;
+    SetPickStatus('baixando ' + IntToStr(Pct) + '%  ' + FmtDl(ReadN) + ' / ' + FmtDl(TotalN));
+    if FPickGet <> nil then
+      FPickGet.Text := IntToStr(Pct) + '%';
+  end
+  else
+  begin
+    if ReadN <= 0 then
+      Frac := 0.04
+    else
+      Frac := ReadN / (ReadN + 512 * 1024);
+    SetPickStatus('baixando ' + FmtDl(ReadN));
+    if FPickGet <> nil then
+      FPickGet.Text := FmtDl(ReadN);
+  end;
+  if Frac < 0.04 then
+    Frac := 0.04;
+  if Frac > 1 then
+    Frac := 1;
+  if (FPickTrack <> nil) and (FPickFill <> nil) then
+    FPickFill.SetBounds(FPickTrack.Position.X, FPickTrack.Position.Y, FPickTrack.Width * Frac, FPickTrack.Height);
+end;
+
+procedure TFormMain.RefreshWadList;
+var
+  Docs, Path: string;
+  Item: TListBoxItem;
+begin
+  if FPickList = nil then
+    Exit;
+  FPickList.Clear;
+  FPicked := '';
+  Docs := '';
+  try
+    Docs := TPath.GetDocumentsPath;
+  except
+    Docs := '';
+  end;
+  if (Docs = '') or not TDirectory.Exists(Docs) then
+  begin
+    SetPickStatus('pasta de documentos indisponivel');
+    Exit;
+  end;
+  for Path in TDirectory.GetFiles(Docs) do
+  begin
+    if not SameText(ExtractFileExt(Path), '.wad') then
+      Continue;
+    Item := TListBoxItem.Create(FPickList);
+    Item.Text := ExtractFileName(Path);
+    Item.TagString := Path;
+    Item.StyledSettings := Item.StyledSettings - [TStyledSetting.FontColor];
+    Item.TextSettings.FontColor := TAlphaColorRec.White;
+    FPickList.AddObject(Item);
+  end;
+  if FPickList.Count = 0 then
+  begin
+    SetPickStatus('nenhum WAD na pasta. Cole um endereco e baixe.');
+  end
+  else
+  begin
+    FPickList.ItemIndex := 0;
+    FPicked := FPickList.ListItems[0].TagString;
+    SetPickStatus(IntToStr(FPickList.Count) + ' WAD');
+  end;
+end;
+
+procedure TFormMain.PickChanged(Sender: TObject);
+begin
+  if (FPickList <> nil) and (FPickList.Selected <> nil) then
+    FPicked := FPickList.Selected.TagString;
+end;
+
+procedure TFormMain.PickPlay(Sender: TObject);
+begin
+  if FGetting then
+    Exit;
+  if FPicked = '' then
+  begin
+    SetPickStatus('escolha um WAD da lista');
+    Exit;
+  end;
+  FIwad := FPicked;
+  StartGame;
+end;
+
+function TWadStream.Write(const Buffer; Count: Longint): Longint;
+begin
+  Result := inherited Write(Buffer, Count);
+  if (Form <> nil) and (Result > 0) and Form.DlPulse(Position, Form.FDlTotal) then
+    Form.QueueDl(Position, Form.FDlTotal);
+end;
+
+procedure TFormMain.PickDownload(Sender: TObject);
+var
+  Url, Name, Dest, Docs: string;
+begin
+  if FGetting or (FPickUrl = nil) then
+    Exit;
+  Url := Trim(FPickUrl.Text);
+  Name := Url;
+  if Pos('?', Name) > 0 then
+    Name := Copy(Name, 1, Pos('?', Name) - 1);
+  Name := ExtractFileName(StringReplace(Name, '/', '\', [rfReplaceAll]));
+  if (Url = '') or not SameText(ExtractFileExt(Name), '.wad') then
+  begin
+    SetPickStatus('o endereco precisa terminar em .wad');
+    Exit;
+  end;
+  try
+    Docs := TPath.GetDocumentsPath;
+  except
+    Docs := '';
+  end;
+  if Docs = '' then
+  begin
+    SetPickStatus('pasta de documentos indisponivel');
+    Exit;
+  end;
+  Dest := TPath.Combine(Docs, Name);
+  FGetting := True;
+  FDlTick := 0;
+  FDlTotal := 0;
+  if FPickGet <> nil then
+    FPickGet.Text := '0%';
+  if FPickFill <> nil then
+    FPickFill.Width := 0;
+  SetPickStatus('conectando...');
+  TThread.CreateAnonymousThread(
+    procedure
+    var
+      Http: THTTPClient;
+      Resp: IHTTPResponse;
+      Down: TWadStream;
+      Check: TFileStream;
+      Mark: AnsiString;
+      Msg: string;
+      Ok: Boolean;
+    begin
+      Ok := False;
+      Msg := '';
+      Http := THTTPClient.Create;
+      try
+        try
+          Http.UserAgent := 'delphi_doom';
+          Http.ConnectionTimeout := 20000;
+          Http.ResponseTimeout := 180000;
+          Http.OnReceiveData := DlReceive;
+          Down := TWadStream.Create(Dest, fmCreate);
+          Down.Form := Self;
+          try
+            Resp := Http.Get(Url, Down);
+            if Resp.StatusCode <> 200 then
+              Msg := 'HTTP ' + IntToStr(Resp.StatusCode);
+          finally
+            Down.Free;
+          end;
+          if Msg = '' then
+          begin
+            Check := TFileStream.Create(Dest, fmOpenRead or fmShareDenyNone);
+            try
+              SetLength(Mark, 4);
+              if Check.Read(Mark[1], 4) <> 4 then
+                Mark := '';
+            finally
+              Check.Free;
+            end;
+            if (Mark <> 'IWAD') and (Mark <> 'PWAD') then
+            begin
+              System.SysUtils.DeleteFile(Dest);
+              Msg := 'o arquivo nao e um WAD';
+            end
+            else
+              Ok := True;
+          end
+          else
+            System.SysUtils.DeleteFile(Dest);
+        except
+          on E: Exception do
+          begin
+            Msg := E.Message;
+            System.SysUtils.DeleteFile(Dest);
+          end;
+        end;
+      finally
+        Http.Free;
+      end;
+      TThread.Synchronize(nil,
+        procedure
+        var
+          I: Integer;
+        begin
+          FGetting := False;
+          if FPickGet <> nil then
+            FPickGet.Text := 'Baixar';
+          if FPickFill <> nil then
+            FPickFill.Width := 0;
+          if Ok then
+          begin
+            RefreshWadList;
+            if FPickList <> nil then
+              for I := 0 to FPickList.Count - 1 do
+                if SameText(FPickList.ListItems[I].Text, Name) then
+                begin
+                  FPickList.ItemIndex := I;
+                  FPicked := FPickList.ListItems[I].TagString;
+                  Break;
+                end;
+            SetPickStatus('baixado ' + Name);
+          end
+          else
+          begin
+            if Msg = '' then
+              Msg := 'falha no download';
+            SetPickStatus(Msg);
+          end;
+        end);
+    end).Start;
+end;
+
+procedure TFormMain.BuildPicker;
+var
+  Back: TRectangle;
+  Play: TButton;
+  Cap: TLabel;
+begin
+  FPick := TLayout.Create(Self);
+  FPick.Parent := Self;
+  FPick.Align := TAlignLayout.Contents;
+  FPick.Visible := True;
+  Back := TRectangle.Create(FPick);
+  Back.Parent := FPick;
+  Back.Align := TAlignLayout.Contents;
+  Back.HitTest := True;
+  Back.Fill.Color := TAlphaColor($F0101010);
+  Back.Stroke.Kind := TBrushKind.None;
+  Cap := TLabel.Create(FPick);
+  Cap.Parent := FPick;
+  Cap.Text := 'Escolha o WAD';
+  Cap.StyledSettings := Cap.StyledSettings - [TStyledSetting.FontColor, TStyledSetting.Size];
+  Cap.TextSettings.FontColor := TAlphaColorRec.White;
+  Cap.TextSettings.Font.Size := 20;
+  FPickStatus := Cap;
+  FPickList := TListBox.Create(FPick);
+  FPickList.Parent := FPick;
+  FPickList.OnChange := PickChanged;
+  FPickUrlBack := TRectangle.Create(FPick);
+  FPickUrlBack.Parent := FPick;
+  FPickUrlBack.HitTest := False;
+  FPickUrlBack.Fill.Color := TAlphaColorRec.White;
+  FPickUrlBack.Stroke.Color := TAlphaColor($FF888888);
+  FPickUrl := TEdit.Create(FPick);
+  FPickUrl.Parent := FPick;
+  FPickUrl.ControlType := TControlType.Styled;
+  FPickUrl.TextPrompt := 'https://.../arquivo.wad';
+  FPickUrl.StyledSettings := FPickUrl.StyledSettings - [TStyledSetting.FontColor, TStyledSetting.Size];
+  FPickUrl.TextSettings.Font.Size := 18;
+  FPickUrl.TextSettings.FontColor := TAlphaColor($FF111111);
+  FPickUrl.OnApplyStyleLookup := StyleUrlEdit;
+  FPickGet := TButton.Create(FPick);
+  FPickGet.Parent := FPick;
+  FPickGet.Text := 'Baixar';
+  FPickGet.OnClick := PickDownload;
+  FPickTrack := TRectangle.Create(FPick);
+  FPickTrack.Parent := FPick;
+  FPickTrack.HitTest := False;
+  FPickTrack.Fill.Color := TAlphaColor($FF333333);
+  FPickTrack.Stroke.Kind := TBrushKind.None;
+  FPickFill := TRectangle.Create(FPick);
+  FPickFill.Parent := FPick;
+  FPickFill.HitTest := False;
+  FPickFill.Fill.Color := TAlphaColor($FF3DDC84);
+  FPickFill.Stroke.Kind := TBrushKind.None;
+  FPickFill.Width := 0;
+  Play := TButton.Create(FPick);
+  Play.Parent := FPick;
+  Play.Text := 'Jogar';
+  Play.OnClick := PickPlay;
+  FPickPlay := Play;
+  RefreshWadList;
+  PlacePick;
+end;
+
 procedure TFormMain.FormCreate(Sender: TObject);
 begin
   FScale := 2;
@@ -1317,6 +1767,22 @@ begin
   SetAudioGates(not FNoSound, not FNoMusic);
   FBmp := FMX.Graphics.TBitmap.Create(SCREENWIDTH, SCREENHEIGHT);
   FSequence := -1;
+  if TOSVersion.Platform = pfAndroid then
+  begin
+    LayPad.Visible := False;
+    LockLandscape;
+    BuildPicker;
+    Exit;
+  end;
+  StartGame;
+end;
+
+procedure TFormMain.StartGame;
+begin
+  if FHost <> nil then
+    Exit;
+  if FPick <> nil then
+    FPick.Visible := False;
   LoadTitle;
   FRes := TResources.Create;
   if FWad <> nil then
@@ -1349,6 +1815,7 @@ begin
     StylePad(BtnWeapon);
     StylePad(BtnRun);
     StylePad(BtnSide);
+    StylePad(BtnEsc);
     ShowToggle(BtnRun, FRunLock);
     ShowToggle(BtnSide, FSideLock);
     PlacePad;
@@ -1390,6 +1857,7 @@ begin
     StylePad(BtnWeapon);
     StylePad(BtnRun);
     StylePad(BtnSide);
+    StylePad(BtnEsc);
     ShowToggle(BtnRun, FRunLock);
     ShowToggle(BtnSide, FSideLock);
     PlacePad;
@@ -1474,7 +1942,9 @@ begin
     FSideLock := not FSideLock;
     FHoldStrafe := FSideLock;
     ShowToggle(BtnSide, FSideLock);
-  end;
+  end
+  else if Sender = BtnEsc then
+    FeedKey(KEY_ESCAPE, '');
 end;
 
 procedure TFormMain.PadUp(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single);

@@ -117,6 +117,17 @@ object FormMain: TFormMain
       OnMouseDown = PadDown
       OnMouseUp = PadUp
     end
+    object BtnEsc: TButton
+      Position.X = 270.000000000000000000
+      Position.Y = 8.000000000000000000
+      Size.Width = 100.000000000000000000
+      Size.Height = 44.000000000000000000
+      Size.PlatformDefault = False
+      TabOrder = 9
+      Text = 'ESC'
+      OnMouseDown = PadDown
+      OnMouseUp = PadUp
+    end
     object BtnUse: TButton
       Position.X = 420.000000000000000000
       Position.Y = 116.000000000000000000
